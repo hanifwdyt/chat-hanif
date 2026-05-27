@@ -16,6 +16,19 @@
   --color-assistant-bubble: transparent;
 }
 
+/* Light theme override — applied via .theme-light on <html> */
+html.theme-light {
+  --color-bg: #ffffff;
+  --color-bg-2: #f7f7f7;
+  --color-bg-3: #ececec;
+  --color-border: #e0e0e0;
+  --color-text: #0a0a0a;
+  --color-text-muted: #404040;
+  --color-text-dim: #8a8a8a;
+  --color-accent: #ea580c;
+  --color-accent-hover: #c2410c;
+}
+
 html, body {
   background: var(--color-bg);
   color: var(--color-text);
@@ -91,6 +104,8 @@ html, body {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: #333; }
+html.theme-light ::-webkit-scrollbar-thumb { background: #cfcfcf; }
+html.theme-light ::-webkit-scrollbar-thumb:hover { background: #b0b0b0; }
 
 /* Streaming cursor */
 .streaming-cursor::after {
@@ -103,4 +118,39 @@ html, body {
 @keyframes blink {
   0%, 50% { opacity: 1; }
   51%, 100% { opacity: 0; }
+}
+
+/* Highlight.js gets overridden in light mode to keep readable */
+html.theme-light .prose-chat pre {
+  background: #1f2937;
+}
+
+/* Modal overlay */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+html.theme-light .modal-backdrop { background: rgba(0,0,0,0.35); }
+
+.modal-panel {
+  background: var(--color-bg-2);
+  border: 1px solid var(--color-border);
+  border-radius: 0.75rem;
+  width: 100%;
+  max-width: 32rem;
+  max-height: 90vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Command palette */
+.cmdk-item[aria-selected="true"] {
+  background: var(--color-bg-3);
 }

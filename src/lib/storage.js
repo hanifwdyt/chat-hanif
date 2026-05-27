@@ -4,7 +4,7 @@ import { openDB } from "idb";
 import { v4 as uuid } from "uuid";
 
 const DB_NAME = "chat-hanif";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const CONV_STORE = "conversations";
 const MSG_STORE = "messages";
 
@@ -14,7 +14,7 @@ function getDB() {
   if (typeof window === "undefined") return null;
   if (!dbPromise) {
     dbPromise = openDB(DB_NAME, DB_VERSION, {
-      upgrade(db) {
+      upgrade(db, oldVersion) {
         if (!db.objectStoreNames.contains(CONV_STORE)) {
           const conv = db.createObjectStore(CONV_STORE, { keyPath: "id" });
           conv.createIndex("updatedAt", "updatedAt");
@@ -24,23 +24,37 @@ function getDB() {
           msg.createIndex("conversationId", "conversationId");
           msg.createIndex("createdAt", "createdAt");
         }
+        if (oldVersion < 2) {
+          // Fields pinned/tags/systemPrompt default applied at read-time via normalizeConv
+        }
       },
     });
   }
   return dbPromise;
 }
 
+function normalizeConv(c) {
+  if (!c) return c;
+  return {
+    ...c,
+    pinned: c.pinned || false,
+    tags: c.tags || [],
+    systemPrompt: c.systemPrompt || "",
+  };
+}
+
 export async function listConversations() {
   const db = await getDB();
   if (!db) return [];
   const all = await db.getAllFromIndex(CONV_STORE, "updatedAt");
-  return all.reverse();
+  return all.reverse().map(normalizeConv);
 }
 
 export async function getConversation(id) {
   const db = await getDB();
   if (!db) return null;
-  return db.get(CONV_STORE, id);
+  const c = await db.get(CONV_STORE, id);
+  return normalizeConv(c);
 }
 
 export async function createConversation({ title = "New chat", model } = {}) {
@@ -51,6 +65,9 @@ export async function createConversation({ title = "New chat", model } = {}) {
     id: uuid(),
     title,
     model: model || null,
+    pinned: false,
+    tags: [],
+    systemPrompt: "",
     createdAt: now,
     updatedAt: now,
   };
@@ -63,9 +80,17 @@ export async function updateConversation(id, patch) {
   if (!db) return null;
   const existing = await db.get(CONV_STORE, id);
   if (!existing) return null;
-  const next = { ...existing, ...patch, updatedAt: Date.now() };
+  // Don't auto-touch updatedAt if only flag fields change
+  const touchUpdated = !("_silent" in patch);
+  const cleanPatch = { ...patch };
+  delete cleanPatch._silent;
+  const next = {
+    ...existing,
+    ...cleanPatch,
+    updatedAt: touchUpdated ? Date.now() : existing.updatedAt,
+  };
   await db.put(CONV_STORE, next);
-  return next;
+  return normalizeConv(next);
 }
 
 export async function deleteConversation(id) {
@@ -81,6 +106,8 @@ export async function deleteConversation(id) {
     cursor = await cursor.continue();
   }
   await tx.done;
+  // Clear draft
+  clearDraft(id);
 }
 
 export async function listMessages(conversationId) {
@@ -137,6 +164,55 @@ export async function deleteMessagesAfter(conversationId, createdAt) {
   await tx.done;
 }
 
+export async function deleteMessagesFromIncluding(conversationId, fromCreatedAt) {
+  return deleteMessagesAfter(conversationId, fromCreatedAt);
+}
+
+// Full-text search across conversation titles and message contents.
+// Returns: [{ conversation, snippet }]
+export async function searchAll(query) {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  const db = await getDB();
+  if (!db) return [];
+
+  const convs = await db.getAll(CONV_STORE);
+  const msgs = await db.getAll(MSG_STORE);
+
+  const msgByConv = new Map();
+  for (const m of msgs) {
+    if (!msgByConv.has(m.conversationId)) msgByConv.set(m.conversationId, []);
+    msgByConv.get(m.conversationId).push(m);
+  }
+
+  const results = [];
+  for (const c of convs) {
+    const title = (c.title || "").toLowerCase();
+    const tags = (c.tags || []).join(" ").toLowerCase();
+    const conversationHit = title.includes(q) || tags.includes(q);
+    let messageHit = null;
+    const myMsgs = msgByConv.get(c.id) || [];
+    for (const m of myMsgs) {
+      const txt = (m.content || "").toLowerCase();
+      const idx = txt.indexOf(q);
+      if (idx !== -1) {
+        const start = Math.max(0, idx - 40);
+        const end = Math.min(m.content.length, idx + q.length + 60);
+        messageHit = (start > 0 ? "…" : "") + m.content.slice(start, end) + (end < m.content.length ? "…" : "");
+        break;
+      }
+    }
+    if (conversationHit || messageHit) {
+      results.push({
+        conversation: normalizeConv(c),
+        snippet: messageHit || (c.tags?.length ? `#${c.tags.join(" #")}` : ""),
+      });
+    }
+  }
+  results.sort((a, b) => b.conversation.updatedAt - a.conversation.updatedAt);
+  return results;
+}
+
 const PREFS_KEY = "chat-hanif:prefs";
 
 export function getPrefs() {
@@ -153,4 +229,40 @@ export function setPrefs(patch) {
   if (typeof window === "undefined") return;
   const next = { ...getPrefs(), ...patch };
   localStorage.setItem(PREFS_KEY, JSON.stringify(next));
+}
+
+// Drafts: per-conversation unsent text
+const DRAFT_KEY = (id) => `chat-hanif:draft:${id || "__new__"}`;
+
+export function getDraft(convId) {
+  if (typeof window === "undefined") return "";
+  try {
+    return localStorage.getItem(DRAFT_KEY(convId)) || "";
+  } catch {
+    return "";
+  }
+}
+
+export function setDraft(convId, text) {
+  if (typeof window === "undefined") return;
+  try {
+    if (!text) localStorage.removeItem(DRAFT_KEY(convId));
+    else localStorage.setItem(DRAFT_KEY(convId), text);
+  } catch {}
+}
+
+export function clearDraft(convId) {
+  setDraft(convId, "");
+}
+
+// Collect all unique tags from existing conversations
+export async function listAllTags() {
+  const db = await getDB();
+  if (!db) return [];
+  const all = await db.getAll(CONV_STORE);
+  const set = new Set();
+  for (const c of all) {
+    for (const t of c.tags || []) set.add(t);
+  }
+  return [...set].sort();
 }

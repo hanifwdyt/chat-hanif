@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, memo } from "react";
+import { useState, useEffect, useRef, memo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -79,15 +79,83 @@ function MessageBody({ content }) {
   );
 }
 
-function Message({ message, isStreaming, onCopy, onRegenerate, onDelete, isLast }) {
+function StatsBadge({ stats }) {
+  if (!stats) return null;
+  const parts = [];
+  if (stats.ttft != null) parts.push(`ttft ${(stats.ttft / 1000).toFixed(2)}s`);
+  if (stats.tps != null) parts.push(`${stats.tps.toFixed(1)} tok/s`);
+  if (stats.tokens != null) parts.push(`~${stats.tokens} tok`);
+  if (stats.duration != null) parts.push(`${(stats.duration / 1000).toFixed(2)}s`);
+  if (!parts.length) return null;
+  return (
+    <span className="text-[10px] text-text-dim font-mono">{parts.join(" · ")}</span>
+  );
+}
+
+function Message({
+  message,
+  isStreaming,
+  onCopy,
+  onRegenerate,
+  onDelete,
+  onEditUser,
+  isLast,
+}) {
   const [copied, setCopied] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editValue, setEditValue] = useState(message.content);
+  const textareaRef = useRef(null);
   const isUser = message.role === "user";
+
+  useEffect(() => {
+    setEditValue(message.content);
+  }, [message.content]);
+
+  useEffect(() => {
+    if (editing && textareaRef.current) {
+      const ta = textareaRef.current;
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+      ta.style.height = "auto";
+      ta.style.height = Math.min(ta.scrollHeight, 400) + "px";
+    }
+  }, [editing]);
 
   function copy() {
     navigator.clipboard.writeText(message.content);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
     onCopy?.();
+  }
+
+  function startEdit() {
+    setEditValue(message.content);
+    setEditing(true);
+  }
+
+  function cancelEdit() {
+    setEditing(false);
+    setEditValue(message.content);
+  }
+
+  function commitEdit() {
+    const trimmed = editValue.trim();
+    if (!trimmed || trimmed === message.content) {
+      setEditing(false);
+      return;
+    }
+    setEditing(false);
+    onEditUser?.(message.id, trimmed);
+  }
+
+  function onEditKey(e) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      cancelEdit();
+    } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      commitEdit();
+    }
   }
 
   return (
@@ -103,22 +171,65 @@ function Message({ message, isStreaming, onCopy, onRegenerate, onDelete, isLast 
 
         <div className="flex-1 min-w-0 pt-0.5">
           {isUser ? (
-            <div className="prose-chat whitespace-pre-wrap break-words">
-              {message.content}
-            </div>
+            editing ? (
+              <div className="space-y-2">
+                <textarea
+                  ref={textareaRef}
+                  value={editValue}
+                  onChange={(e) => {
+                    setEditValue(e.target.value);
+                    e.target.style.height = "auto";
+                    e.target.style.height = Math.min(e.target.scrollHeight, 400) + "px";
+                  }}
+                  onKeyDown={onEditKey}
+                  className="w-full px-3 py-2 text-sm bg-bg-3 rounded-md outline-none border border-accent resize-none"
+                />
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={commitEdit}
+                    className="px-3 py-1 text-xs rounded-md bg-accent hover:bg-accent-hover text-white"
+                  >
+                    Save & regenerate
+                  </button>
+                  <button
+                    onClick={cancelEdit}
+                    className="px-3 py-1 text-xs rounded-md bg-bg-3 hover:bg-border text-text-muted"
+                  >
+                    Cancel
+                  </button>
+                  <span className="text-[10px] text-text-dim font-mono ml-auto">
+                    ⌘↩ save · Esc cancel
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <div className="prose-chat whitespace-pre-wrap break-words">
+                {message.content}
+              </div>
+            )
           ) : (
             <div className={isStreaming ? "streaming-cursor" : ""}>
               <MessageBody content={message.content || ""} />
             </div>
           )}
 
-          {message.model && !isUser && (
-            <div className="mt-2 text-[10px] text-text-dim font-mono">
-              {message.model}
+          {!isUser && (message.model || message.stats) && (
+            <div className="mt-2 flex items-center gap-2 flex-wrap">
+              {message.model && (
+                <span className="text-[10px] text-text-dim font-mono">
+                  {message.model}
+                </span>
+              )}
+              {message.stats && (
+                <>
+                  <span className="text-[10px] text-text-dim">·</span>
+                  <StatsBadge stats={message.stats} />
+                </>
+              )}
             </div>
           )}
 
-          {!isStreaming && (
+          {!isStreaming && !editing && (
             <div className="flex items-center gap-1 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
               <button
                 onClick={copy}
@@ -130,6 +241,18 @@ function Message({ message, isStreaming, onCopy, onRegenerate, onDelete, isLast 
                 </svg>
                 {copied ? "Copied" : "Copy"}
               </button>
+              {isUser && (
+                <button
+                  onClick={startEdit}
+                  className="px-2 py-1 text-[11px] text-text-dim hover:text-text rounded-md hover:bg-bg-3 inline-flex items-center gap-1"
+                  title="Edit & regenerate"
+                >
+                  <svg className="size-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+                  </svg>
+                  Edit
+                </button>
+              )}
               {!isUser && isLast && (
                 <button
                   onClick={onRegenerate}

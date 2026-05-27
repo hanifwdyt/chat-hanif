@@ -2,9 +2,25 @@
 
 import { useEffect, useRef, useState } from "react";
 
-export default function Composer({ onSend, onStop, isStreaming, disabled }) {
-  const [text, setText] = useState("");
+export default function Composer({
+  onSend,
+  onStop,
+  isStreaming,
+  disabled,
+  conversationId,
+  initialDraft,
+  onDraftChange,
+}) {
+  const [text, setText] = useState(initialDraft || "");
   const taRef = useRef(null);
+  const lastConvIdRef = useRef(conversationId);
+
+  useEffect(() => {
+    if (lastConvIdRef.current !== conversationId) {
+      setText(initialDraft || "");
+      lastConvIdRef.current = conversationId;
+    }
+  }, [conversationId, initialDraft]);
 
   useEffect(() => {
     const ta = taRef.current;
@@ -12,6 +28,10 @@ export default function Composer({ onSend, onStop, isStreaming, disabled }) {
     ta.style.height = "auto";
     ta.style.height = Math.min(ta.scrollHeight, 240) + "px";
   }, [text]);
+
+  useEffect(() => {
+    onDraftChange?.(text);
+  }, [text, onDraftChange]);
 
   function submit() {
     const trimmed = text.trim();
@@ -26,6 +46,8 @@ export default function Composer({ onSend, onStop, isStreaming, disabled }) {
       submit();
     }
   }
+
+  const hasDraft = text.trim().length > 0;
 
   return (
     <div className="border-t border-border bg-bg">
@@ -64,8 +86,14 @@ export default function Composer({ onSend, onStop, isStreaming, disabled }) {
             </button>
           )}
         </div>
-        <div className="mt-2 text-[10px] text-text-dim text-center">
-          Enter untuk kirim · Shift+Enter untuk baris baru · History tersimpan di browser lo
+        <div className="mt-2 flex items-center justify-center gap-2 text-[10px] text-text-dim">
+          <span>Enter kirim · Shift+Enter baris baru</span>
+          {hasDraft && (
+            <>
+              <span>·</span>
+              <span className="text-accent/70 font-mono">draft saved</span>
+            </>
+          )}
         </div>
       </div>
     </div>
