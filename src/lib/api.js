@@ -1,10 +1,18 @@
 "use client";
 
 const ROUTER_BASE = process.env.NEXT_PUBLIC_ROUTER_BASE || "https://router.hanif.app";
+const ROUTER_API_KEY = process.env.NEXT_PUBLIC_ROUTER_API_KEY || "";
+
+function authHeaders() {
+  return ROUTER_API_KEY ? { Authorization: `Bearer ${ROUTER_API_KEY}` } : {};
+}
 
 export async function fetchModels() {
   try {
-    const res = await fetch(`${ROUTER_BASE}/v1/models`, { cache: "no-store" });
+    const res = await fetch(`${ROUTER_BASE}/v1/models`, {
+      cache: "no-store",
+      headers: authHeaders(),
+    });
     if (!res.ok) return [];
     const data = await res.json();
     return (data?.data || []).map((m) => ({ id: m.id, owned_by: m.owned_by }));
@@ -16,7 +24,7 @@ export async function fetchModels() {
 export async function* streamChat({ model, messages, signal }) {
   const res = await fetch(`${ROUTER_BASE}/v1/chat/completions`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ model, messages, stream: true }),
     signal,
   });
