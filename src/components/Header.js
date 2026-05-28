@@ -17,6 +17,10 @@ export default function Header({
   onShare,
   canShare,
   onOpenCommandPalette,
+  onEditPersona,
+  onEditAbilities,
+  personaEnabled,
+  activeAbilityCount = 0,
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -68,10 +72,26 @@ export default function Header({
 
         <div className="flex-1 min-w-0 flex items-center gap-1.5 truncate text-sm font-medium text-text-muted">
           <span className="truncate">{title || "New chat"}</span>
+          {personaEnabled && (
+            <span
+              className="flex-shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[9px] rounded bg-accent/15 text-accent font-mono"
+              title="AI Hanif persona aktif"
+            >
+              hanif
+            </span>
+          )}
+          {activeAbilityCount > 0 && (
+            <span
+              className="flex-shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[9px] rounded bg-accent/15 text-accent font-mono"
+              title={`${activeAbilityCount} ability aktif`}
+            >
+              {activeAbilityCount}⚡
+            </span>
+          )}
           {hasSystemPrompt && (
             <span
               className="flex-shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[9px] rounded bg-accent/15 text-accent font-mono"
-              title="System prompt aktif"
+              title="Per-conv system prompt aktif"
             >
               sys
             </span>
@@ -164,6 +184,36 @@ export default function Header({
               <button
                 onClick={() => {
                   setMenuOpen(false);
+                  onEditPersona?.();
+                }}
+                className="w-full text-left px-3 py-2 text-xs hover:bg-bg-3 flex items-center gap-2"
+              >
+                <svg className="size-3.5 text-text-dim" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="12" cy="8" r="4" />
+                  <path d="M4 21v-1a8 8 0 0 1 16 0v1" />
+                </svg>
+                AI Hanif persona
+                {personaEnabled && <span className="ml-auto text-[10px] text-accent">●</span>}
+              </button>
+              <button
+                onClick={() => {
+                  setMenuOpen(false);
+                  onEditAbilities?.();
+                }}
+                className="w-full text-left px-3 py-2 text-xs hover:bg-bg-3 flex items-center gap-2"
+              >
+                <svg className="size-3.5 text-text-dim" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" strokeLinejoin="round" />
+                </svg>
+                Abilities
+                {activeAbilityCount > 0 && (
+                  <span className="ml-auto text-[10px] text-accent font-mono">{activeAbilityCount}</span>
+                )}
+              </button>
+              <div className="border-t border-border my-1" />
+              <button
+                onClick={() => {
+                  setMenuOpen(false);
                   onEditSystemPrompt?.();
                 }}
                 className="w-full text-left px-3 py-2 text-xs hover:bg-bg-3 flex items-center gap-2"
@@ -172,7 +222,7 @@ export default function Header({
                   <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
                   <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" />
                 </svg>
-                System prompt
+                Per-conv prompt
                 {hasSystemPrompt && <span className="ml-auto text-[10px] text-accent">●</span>}
               </button>
               <button

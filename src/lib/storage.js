@@ -4,9 +4,10 @@ import { openDB } from "idb";
 import { v4 as uuid } from "uuid";
 
 const DB_NAME = "chat-hanif";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const CONV_STORE = "conversations";
 const MSG_STORE = "messages";
+const ABILITY_STORE = "abilities";
 
 let dbPromise = null;
 
@@ -24,8 +25,11 @@ function getDB() {
           msg.createIndex("conversationId", "conversationId");
           msg.createIndex("createdAt", "createdAt");
         }
-        if (oldVersion < 2) {
-          // Fields pinned/tags/systemPrompt default applied at read-time via normalizeConv
+        if (oldVersion < 3) {
+          if (!db.objectStoreNames.contains(ABILITY_STORE)) {
+            const ab = db.createObjectStore(ABILITY_STORE, { keyPath: "id" });
+            ab.createIndex("updatedAt", "updatedAt");
+          }
         }
       },
     });
@@ -40,6 +44,8 @@ function normalizeConv(c) {
     pinned: c.pinned || false,
     tags: c.tags || [],
     systemPrompt: c.systemPrompt || "",
+    // null = inherit global; array = per-conv override (including [] = explicit none)
+    abilityIds: Array.isArray(c.abilityIds) ? c.abilityIds : null,
   };
 }
 
@@ -68,6 +74,7 @@ export async function createConversation({ title = "New chat", model } = {}) {
     pinned: false,
     tags: [],
     systemPrompt: "",
+    abilityIds: null,
     createdAt: now,
     updatedAt: now,
   };
@@ -168,6 +175,17 @@ export async function deleteMessagesFromIncluding(conversationId, fromCreatedAt)
   return deleteMessagesAfter(conversationId, fromCreatedAt);
 }
 
+function messageContentToText(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((b) => b?.type === "text" && typeof b.text === "string")
+      .map((b) => b.text)
+      .join(" ");
+  }
+  return "";
+}
+
 // Full-text search across conversation titles and message contents.
 // Returns: [{ conversation, snippet }]
 export async function searchAll(query) {
@@ -193,12 +211,13 @@ export async function searchAll(query) {
     let messageHit = null;
     const myMsgs = msgByConv.get(c.id) || [];
     for (const m of myMsgs) {
-      const txt = (m.content || "").toLowerCase();
+      const raw = messageContentToText(m.content);
+      const txt = raw.toLowerCase();
       const idx = txt.indexOf(q);
       if (idx !== -1) {
         const start = Math.max(0, idx - 40);
-        const end = Math.min(m.content.length, idx + q.length + 60);
-        messageHit = (start > 0 ? "…" : "") + m.content.slice(start, end) + (end < m.content.length ? "…" : "");
+        const end = Math.min(raw.length, idx + q.length + 60);
+        messageHit = (start > 0 ? "…" : "") + raw.slice(start, end) + (end < raw.length ? "…" : "");
         break;
       }
     }
@@ -265,4 +284,64 @@ export async function listAllTags() {
     for (const t of c.tags || []) set.add(t);
   }
   return [...set].sort();
+}
+
+// -------- Abilities (reusable system-prompt patterns) --------
+
+function normalizeAbility(a) {
+  if (!a) return a;
+  return {
+    ...a,
+    name: a.name || "Untitled",
+    description: a.description || "",
+    prompt: a.prompt || "",
+    icon: a.icon || "",
+  };
+}
+
+export async function listAbilities() {
+  const db = await getDB();
+  if (!db) return [];
+  const all = await db.getAllFromIndex(ABILITY_STORE, "updatedAt");
+  return all.reverse().map(normalizeAbility);
+}
+
+export async function getAbility(id) {
+  const db = await getDB();
+  if (!db) return null;
+  const a = await db.get(ABILITY_STORE, id);
+  return normalizeAbility(a);
+}
+
+export async function createAbility({ name, description = "", prompt = "", icon = "" } = {}) {
+  const db = await getDB();
+  if (!db) return null;
+  const now = Date.now();
+  const ab = {
+    id: uuid(),
+    name: name || "Untitled ability",
+    description,
+    prompt,
+    icon,
+    createdAt: now,
+    updatedAt: now,
+  };
+  await db.put(ABILITY_STORE, ab);
+  return ab;
+}
+
+export async function updateAbility(id, patch) {
+  const db = await getDB();
+  if (!db) return null;
+  const existing = await db.get(ABILITY_STORE, id);
+  if (!existing) return null;
+  const next = { ...existing, ...patch, updatedAt: Date.now() };
+  await db.put(ABILITY_STORE, next);
+  return normalizeAbility(next);
+}
+
+export async function deleteAbility(id) {
+  const db = await getDB();
+  if (!db) return;
+  await db.delete(ABILITY_STORE, id);
 }

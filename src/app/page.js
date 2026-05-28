@@ -9,6 +9,8 @@ import CommandPalette from "@/components/CommandPalette";
 import SystemPromptModal from "@/components/SystemPromptModal";
 import ShareModal from "@/components/ShareModal";
 import TagsEditor from "@/components/TagsEditor";
+import PersonaModal from "@/components/PersonaModal";
+import AbilitiesModal from "@/components/AbilitiesModal";
 import {
   listConversations,
   createConversation,
@@ -26,10 +28,15 @@ import {
   clearDraft,
   searchAll,
   listAllTags,
+  listAbilities,
+  createAbility,
+  updateAbility,
+  deleteAbility,
 } from "@/lib/storage";
 import { fetchModels, streamChat } from "@/lib/api";
 import { exportConversationToExcel } from "@/lib/excel";
 import { getTheme, setTheme, applyTheme, resolveTheme, watchSystemTheme } from "@/lib/theme";
+import { DEFAULT_AI_HANIF_PERSONA, composeSystemPrompt } from "@/lib/persona";
 
 const THEME_ORDER = ["system", "dark", "light"];
 
@@ -50,6 +57,14 @@ export default function Page() {
   const [tagsOpen, setTagsOpen] = useState(false);
   const [tagsTargetId, setTagsTargetId] = useState(null);
   const [allTags, setAllTags] = useState([]);
+
+  // AI Hanif persona + abilities
+  const [personaOpen, setPersonaOpen] = useState(false);
+  const [abilitiesOpen, setAbilitiesOpen] = useState(false);
+  const [persona, setPersona] = useState(DEFAULT_AI_HANIF_PERSONA);
+  const [personaEnabled, setPersonaEnabled] = useState(true);
+  const [globalAbilityIds, setGlobalAbilityIds] = useState([]);
+  const [abilities, setAbilities] = useState([]);
 
   const abortRef = useRef(null);
   const scrollRef = useRef(null);
@@ -77,9 +92,14 @@ export default function Page() {
   // -------- Bootstrap --------
   useEffect(() => {
     (async () => {
-      const [convs, mdls] = await Promise.all([listConversations(), fetchModels()]);
+      const [convs, mdls, abs] = await Promise.all([
+        listConversations(),
+        fetchModels(),
+        listAbilities(),
+      ]);
       setConversations(convs);
       setModels(mdls);
+      setAbilities(abs);
 
       const prefs = getPrefs();
       const defaultModel =
@@ -88,6 +108,11 @@ export default function Page() {
         mdls[0]?.id ||
         "";
       setSelectedModel(defaultModel);
+
+      // Persona + abilities prefs
+      if (typeof prefs.persona === "string") setPersona(prefs.persona);
+      if (typeof prefs.personaEnabled === "boolean") setPersonaEnabled(prefs.personaEnabled);
+      if (Array.isArray(prefs.globalAbilityIds)) setGlobalAbilityIds(prefs.globalAbilityIds);
 
       if (prefs.activeId && convs.find((c) => c.id === prefs.activeId)) {
         setActiveId(prefs.activeId);
@@ -146,6 +171,17 @@ export default function Page() {
     () => conversations.find((c) => c.id === activeId) || null,
     [conversations, activeId]
   );
+
+  // Resolve active ability IDs: per-conv override > global default
+  const activeAbilityIds = useMemo(() => {
+    if (activeConv && Array.isArray(activeConv.abilityIds)) return activeConv.abilityIds;
+    return globalAbilityIds;
+  }, [activeConv, globalAbilityIds]);
+
+  const activeAbilities = useMemo(() => {
+    const byId = new Map(abilities.map((a) => [a.id, a]));
+    return activeAbilityIds.map((id) => byId.get(id)).filter(Boolean);
+  }, [abilities, activeAbilityIds]);
 
   // -------- Conversation handlers --------
   const handleNewChat = useCallback(async () => {
@@ -210,6 +246,63 @@ export default function Page() {
     [tagsTargetId]
   );
 
+  // -------- Persona --------
+  const handleSavePersona = useCallback(({ text, enabled }) => {
+    setPersona(text);
+    setPersonaEnabled(enabled);
+    setPrefs({ persona: text, personaEnabled: enabled });
+    setPersonaOpen(false);
+  }, []);
+
+  // -------- Abilities CRUD --------
+  async function refreshAbilities() {
+    setAbilities(await listAbilities());
+  }
+
+  const handleCreateAbility = useCallback(async (data) => {
+    await createAbility(data);
+    await refreshAbilities();
+  }, []);
+
+  const handleUpdateAbility = useCallback(async (id, patch) => {
+    await updateAbility(id, patch);
+    await refreshAbilities();
+  }, []);
+
+  const handleDeleteAbility = useCallback(async (id) => {
+    await deleteAbility(id);
+    // Also remove from globalAbilityIds + any conv overrides containing it
+    setGlobalAbilityIds((prev) => {
+      const next = prev.filter((x) => x !== id);
+      setPrefs({ globalAbilityIds: next });
+      return next;
+    });
+    for (const c of conversations) {
+      if (Array.isArray(c.abilityIds) && c.abilityIds.includes(id)) {
+        await updateConversation(c.id, {
+          abilityIds: c.abilityIds.filter((x) => x !== id),
+          _silent: true,
+        });
+      }
+    }
+    await refreshConversations();
+    await refreshAbilities();
+  }, [conversations]);
+
+  const handleSetGlobalAbilities = useCallback((ids) => {
+    setGlobalAbilityIds(ids);
+    setPrefs({ globalAbilityIds: ids });
+  }, []);
+
+  const handleSetConvAbilityOverride = useCallback(
+    async (ids) => {
+      if (!activeId) return;
+      await updateConversation(activeId, { abilityIds: ids, _silent: true });
+      await refreshConversations();
+    },
+    [activeId]
+  );
+
   // -------- System prompt --------
   const handleSaveSystemPrompt = useCallback(
     async (text) => {
@@ -242,8 +335,21 @@ export default function Page() {
     const ctrl = new AbortController();
     abortRef.current = ctrl;
 
-    const conv = await (async () => conversations.find((c) => c.id === convId))();
-    const systemPrompt = conv?.systemPrompt || activeConv?.systemPrompt || "";
+    const conv = conversations.find((c) => c.id === convId) || activeConv;
+    const convCustomPrompt = conv?.systemPrompt || "";
+
+    // Resolve abilities for THIS conv (override > global)
+    const convAbilityIds =
+      conv && Array.isArray(conv.abilityIds) ? conv.abilityIds : globalAbilityIds;
+    const byId = new Map(abilities.map((a) => [a.id, a]));
+    const convAbilities = convAbilityIds.map((id) => byId.get(id)).filter(Boolean);
+
+    const systemPrompt = composeSystemPrompt({
+      basePersona: persona,
+      basePersonaEnabled: personaEnabled,
+      abilities: convAbilities,
+      customPrompt: convCustomPrompt,
+    });
 
     const assistant = await addMessage({
       conversationId: convId,
@@ -408,9 +514,21 @@ export default function Page() {
         run: handleNewChat,
       },
       {
+        id: "persona",
+        label: "Edit AI Hanif persona",
+        hint: "Identitas global yang dipakai semua provider",
+        run: () => setPersonaOpen(true),
+      },
+      {
+        id: "abilities",
+        label: `Manage abilities${activeAbilities.length ? ` (${activeAbilities.length} aktif)` : ""}`,
+        hint: "Reusable system-prompt patterns, toggle per percakapan",
+        run: () => setAbilitiesOpen(true),
+      },
+      {
         id: "system-prompt",
-        label: activeConv?.systemPrompt ? "Edit system prompt" : "Set system prompt",
-        hint: "Atur instruksi khusus untuk percakapan ini",
+        label: activeConv?.systemPrompt ? "Edit per-conv prompt" : "Set per-conv prompt",
+        hint: "Instruksi khusus untuk percakapan ini",
         run: () => setSysPromptOpen(true),
       },
       {
@@ -485,6 +603,7 @@ export default function Page() {
     activeId,
     conversations,
     theme,
+    activeAbilities.length,
     handleNewChat,
     handleEditTags,
     handleTogglePin,
@@ -532,6 +651,10 @@ export default function Page() {
           onShare={() => setShareOpen(true)}
           canShare={messages.length > 0}
           onOpenCommandPalette={() => setCmdOpen(true)}
+          onEditPersona={() => setPersonaOpen(true)}
+          onEditAbilities={() => setAbilitiesOpen(true)}
+          personaEnabled={personaEnabled}
+          activeAbilityCount={activeAbilities.length}
         />
 
         <div ref={scrollRef} className="flex-1 overflow-y-auto">
@@ -591,6 +714,26 @@ export default function Page() {
           setTagsTargetId(null);
         }}
         onSave={handleSaveTags}
+      />
+      <PersonaModal
+        open={personaOpen}
+        value={persona}
+        enabled={personaEnabled}
+        onClose={() => setPersonaOpen(false)}
+        onSave={handleSavePersona}
+      />
+      <AbilitiesModal
+        open={abilitiesOpen}
+        abilities={abilities}
+        globalEnabledIds={globalAbilityIds}
+        conversationOverrideIds={activeConv?.abilityIds ?? null}
+        hasConversation={!!activeConv}
+        onClose={() => setAbilitiesOpen(false)}
+        onCreate={handleCreateAbility}
+        onUpdate={handleUpdateAbility}
+        onDelete={handleDeleteAbility}
+        onSetGlobalEnabled={handleSetGlobalAbilities}
+        onSetConvOverride={handleSetConvAbilityOverride}
       />
     </div>
   );

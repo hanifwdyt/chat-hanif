@@ -143,13 +143,13 @@ function Message({
   }
 
   function startEdit() {
-    setEditValue(message.content);
+    setEditValue(extractText(message.content));
     setEditing(true);
   }
 
   function cancelEdit() {
     setEditing(false);
-    setEditValue(message.content);
+    setEditValue(extractText(message.content));
   }
 
   function commitEdit() {

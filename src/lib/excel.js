@@ -2,13 +2,26 @@
 
 import * as XLSX from "xlsx";
 
+function contentToText(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    const parts = [];
+    for (const b of content) {
+      if (b?.type === "text" && typeof b.text === "string") parts.push(b.text);
+      else if (b?.type === "image_url") parts.push("[image]");
+    }
+    return parts.join(" ");
+  }
+  return "";
+}
+
 export function exportConversationToExcel(conversation, messages) {
   const rows = messages.map((m, i) => ({
     "#": i + 1,
     role: m.role,
     model: m.model || "",
     timestamp: new Date(m.createdAt).toISOString(),
-    content: m.content,
+    content: contentToText(m.content),
   }));
 
   const ws = XLSX.utils.json_to_sheet(rows, {
