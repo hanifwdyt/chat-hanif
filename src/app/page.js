@@ -290,14 +290,26 @@ export default function Page() {
   }
 
   const handleSend = useCallback(
-    async (text) => {
+    async (text, attachments = []) => {
       if (!selectedModel) return;
       const convId = await ensureConversation();
+
+      // Build multimodal content if images are attached
+      const content =
+        attachments.length > 0
+          ? [
+              ...(text ? [{ type: "text", text }] : []),
+              ...attachments.map((a) => ({
+                type: "image_url",
+                image_url: { url: a.url },
+              })),
+            ]
+          : text;
 
       await addMessage({
         conversationId: convId,
         role: "user",
-        content: text,
+        content,
       });
       clearDraft(convId);
       draftRef.current = "";
@@ -308,7 +320,8 @@ export default function Page() {
       const active = conversations.find((c) => c.id === convId);
       const isFirst = !active || active.title === "New chat" || currentMessages.length <= 1;
       if (isFirst) {
-        const title = text.slice(0, 60).replace(/\s+/g, " ").trim();
+        const titleText = typeof content === "string" ? content : (text || "Image");
+        const title = titleText.slice(0, 60).replace(/\s+/g, " ").trim();
         await updateConversation(convId, { title: title || "New chat", model: selectedModel });
         await refreshConversations();
       }

@@ -92,6 +92,20 @@ function StatsBadge({ stats }) {
   );
 }
 
+function extractText(content) {
+  if (Array.isArray(content)) {
+    return content.filter((b) => b.type === "text").map((b) => b.text).join("");
+  }
+  return content || "";
+}
+
+function extractImages(content) {
+  if (Array.isArray(content)) {
+    return content.filter((b) => b.type === "image_url").map((b) => b.image_url?.url);
+  }
+  return [];
+}
+
 function Message({
   message,
   isStreaming,
@@ -103,12 +117,12 @@ function Message({
 }) {
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [editValue, setEditValue] = useState(message.content);
+  const [editValue, setEditValue] = useState(() => extractText(message.content));
   const textareaRef = useRef(null);
   const isUser = message.role === "user";
 
   useEffect(() => {
-    setEditValue(message.content);
+    setEditValue(extractText(message.content));
   }, [message.content]);
 
   useEffect(() => {
@@ -122,7 +136,7 @@ function Message({
   }, [editing]);
 
   function copy() {
-    navigator.clipboard.writeText(message.content);
+    navigator.clipboard.writeText(extractText(message.content));
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
     onCopy?.();
@@ -140,7 +154,7 @@ function Message({
 
   function commitEdit() {
     const trimmed = editValue.trim();
-    if (!trimmed || trimmed === message.content) {
+    if (!trimmed || trimmed === extractText(message.content)) {
       setEditing(false);
       return;
     }
@@ -204,7 +218,15 @@ function Message({
               </div>
             ) : (
               <div className="prose-chat whitespace-pre-wrap break-words">
-                {message.content}
+                {extractImages(message.content).map((url, i) => (
+                  <img
+                    key={i}
+                    src={url}
+                    alt=""
+                    className="max-w-xs rounded-lg mb-2 border border-border"
+                  />
+                ))}
+                {extractText(message.content)}
               </div>
             )
           ) : (
