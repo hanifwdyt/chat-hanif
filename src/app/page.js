@@ -104,11 +104,13 @@ export default function Page() {
       setMessages([]);
       return;
     }
+    let cancelled = false;
     (async () => {
       const msgs = await listMessages(activeId);
-      setMessages(msgs);
+      if (!cancelled) setMessages(msgs);
     })();
     setPrefs({ activeId });
+    return () => { cancelled = true; };
   }, [activeId]);
 
   useEffect(() => {
@@ -149,9 +151,9 @@ export default function Page() {
   const handleNewChat = useCallback(async () => {
     if (isStreaming) return;
     const conv = await createConversation({ title: "New chat", model: selectedModel });
-    await refreshConversations();
-    setActiveId(conv.id);
     setMessages([]);
+    setActiveId(conv.id);
+    refreshConversations(); // fire-and-forget sidebar update
   }, [isStreaming, selectedModel]);
 
   const handleSelect = useCallback(
