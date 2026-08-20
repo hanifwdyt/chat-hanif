@@ -7,6 +7,7 @@ import remarkMath from "remark-math";
 import rehypeHighlight from "rehype-highlight";
 import rehypeKatex from "rehype-katex";
 import { parseMarkdownTableToRows, exportTableToExcel } from "@/lib/excel";
+import StreamStatus from "@/components/StreamStatus";
 
 function CodeBlock({ children, className }) {
   const [copied, setCopied] = useState(false);
@@ -82,13 +83,25 @@ function MessageBody({ content }) {
 function StatsBadge({ stats }) {
   if (!stats) return null;
   const parts = [];
-  if (stats.ttft != null) parts.push(`ttft ${(stats.ttft / 1000).toFixed(2)}s`);
-  if (stats.tps != null) parts.push(`${stats.tps.toFixed(1)} tok/s`);
-  if (stats.tokens != null) parts.push(`~${stats.tokens} tok`);
-  if (stats.duration != null) parts.push(`${(stats.duration / 1000).toFixed(2)}s`);
+  // Waktu tunggu huruf pertama itu angka yang paling kerasa buat orang,
+  // jadi dia yang duluan. Sisanya menyusul kalau memang bermakna.
+  if (stats.ttft != null) parts.push(`${(stats.ttft / 1000).toFixed(1)}s ke huruf pertama`);
+  if (stats.reasoningTokens) parts.push(`${stats.reasoningTokens} token nalar`);
+  if (stats.tokens != null) parts.push(`${stats.estimated ? "~" : ""}${stats.tokens} token`);
+  if (stats.tps != null) parts.push(`${stats.tps.toFixed(0)} tok/s`);
+  if (stats.duration != null) parts.push(`${(stats.duration / 1000).toFixed(1)}s total`);
   if (!parts.length) return null;
   return (
-    <span className="text-[10px] text-text-dim font-mono">{parts.join(" · ")}</span>
+    <span
+      className="text-[10px] text-text-dim font-mono"
+      title={
+        stats.promptTokens != null
+          ? `${stats.promptTokens} token masuk · ${stats.tokens} token keluar`
+          : undefined
+      }
+    >
+      {parts.join(" · ")}
+    </span>
   );
 }
 
@@ -109,6 +122,7 @@ function extractImages(content) {
 function Message({
   message,
   isStreaming,
+  phase,
   onCopy,
   onRegenerate,
   onDelete,
@@ -230,8 +244,15 @@ function Message({
               </div>
             )
           ) : (
-            <div className={isStreaming ? "streaming-cursor" : ""}>
-              <MessageBody content={message.content || ""} />
+            <div className={isStreaming && extractText(message.content) ? "streaming-cursor" : ""}>
+              {/* Selama belum ada satu huruf pun, ruang jawaban diisi kabar
+                  fase — bukan gelembung kosong yang bikin orang ragu apakah
+                  kiriman tadi kebaca. */}
+              {isStreaming && !extractText(message.content) ? (
+                <StreamStatus phase={phase || "connecting"} inline />
+              ) : (
+                <MessageBody content={message.content || ""} />
+              )}
             </div>
           )}
 

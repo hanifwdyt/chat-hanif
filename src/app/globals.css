@@ -154,3 +154,21 @@ html.theme-light .modal-backdrop { background: rgba(0,0,0,0.35); }
 .cmdk-item[aria-selected="true"] {
   background: var(--color-bg-3);
 }
+
+/* Denyut kecil selama menunggu jawaban. Satu titik yang bernapas sudah cukup
+   buat memberi tahu "masih jalan" tanpa ikut menarik perhatian dari teks. */
+.stream-pulse {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.6;
+  animation: stream-breathe 1.6s ease-in-out infinite;
+}
+@keyframes stream-breathe {
+  0%, 100% { opacity: 0.25; transform: scale(0.85); }
+  50% { opacity: 0.9; transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .stream-pulse { animation: none; opacity: 0.6; }
+}

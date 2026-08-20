@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import Sidebar from "@/components/Sidebar";
 import Header from "@/components/Header";
 import Message from "@/components/Message";
+import { ErrorNotice, TruncatedNotice, ScrollToBottom } from "@/components/StreamNotices";
 import Composer from "@/components/Composer";
 import CommandPalette from "@/components/CommandPalette";
 import SystemPromptModal from "@/components/SystemPromptModal";
@@ -19,6 +20,7 @@ import {
   listMessages,
   addMessage,
   updateMessage,
+  deleteMessage,
   deleteMessagesAfter,
   deleteMessagesFromIncluding,
   getPrefs,
@@ -68,6 +70,13 @@ export default function Page() {
 
   const abortRef = useRef(null);
   const scrollRef = useRef(null);
+  const stickRef = useRef(true);          // ikut ke bawah selama orangnya belum menggulir naik
+  const [atBottom, setAtBottom] = useState(true);
+  const [streamPhase, setStreamPhase] = useState(null);
+  const [streamRetry, setStreamRetry] = useState(0);
+  const [streamError, setStreamError] = useState(null);
+  const [failedModels, setFailedModels] = useState(() => new Set());
+  const [truncated, setTruncated] = useState(false);
   const draftRef = useRef("");
 
   // -------- Theme --------
@@ -142,11 +151,35 @@ export default function Page() {
     if (selectedModel) setPrefs({ model: selectedModel });
   }, [selectedModel]);
 
+  // Menggulir sendiri cuma selama orangnya memang sedang di bawah. Begitu dia
+  // naik buat membaca ulang, jawaban yang terus tumbuh nggak boleh menyeretnya
+  // balik — itu bikin isi yang lagi dibaca lompat pergi.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !stickRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages, streamPhase]);
+
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [messages]);
+    function onScroll() {
+      const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
+      const near = gap < 120;
+      stickRef.current = near;
+      setAtBottom(near);
+    }
+    el.addEventListener("scroll", onScroll, { passive: true });
+    onScroll();
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [hydrated, activeId]);
+
+  const scrollToBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    stickRef.current = true;
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  }, []);
 
   // -------- Cmd+K shortcut --------
   useEffect(() => {
@@ -331,6 +364,10 @@ export default function Page() {
   }
 
   async function runStream(convId, history) {
+    return runStreamWithModel(convId, history, selectedModel);
+  }
+
+  async function runStreamWithModel(convId, history, modelId) {
     setIsStreaming(true);
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -355,40 +392,78 @@ export default function Page() {
       conversationId: convId,
       role: "assistant",
       content: "",
-      model: selectedModel,
+      model: modelId,
     });
     setMessages((m) => [...m, assistant]);
 
     let acc = "";
     let finalStats = null;
+    let finishReason = null;
+    let failed = null;
+
+    // Menulis ke layar dibatasi satu kali per bingkai. Tanpa ini, tiap
+    // potongan kecil memicu render sendiri dan teksnya kelihatan bergetar.
+    let pending = false;
+    const flush = () => {
+      pending = false;
+      setMessages((m) => m.map((x) => (x.id === assistant.id ? { ...x, content: acc } : x)));
+    };
+
+    setStreamError(null);
+    setTruncated(false);
+    setStreamRetry(0);
+    setStreamPhase("connecting");
+
     try {
-      for await (const chunk of streamChat({
-        model: selectedModel,
+      for await (const event of streamChat({
+        model: modelId,
         messages: history.map((m) => ({ role: m.role, content: m.content })),
         systemPrompt,
         signal: ctrl.signal,
       })) {
-        if (chunk.delta) {
-          acc += chunk.delta;
-          setMessages((m) =>
-            m.map((x) => (x.id === assistant.id ? { ...x, content: acc } : x))
-          );
-        }
-        if (chunk.done && chunk.stats) {
-          finalStats = chunk.stats;
+        if (event.type === "phase") {
+          setStreamPhase(event.phase);
+          setStreamRetry(event.retry || 0);
+        } else if (event.type === "delta") {
+          acc += event.text;
+          if (!pending) {
+            pending = true;
+            requestAnimationFrame(flush);
+          }
+        } else if (event.type === "done") {
+          finalStats = event.stats;
+          finishReason = event.finishReason;
         }
       }
     } catch (e) {
       if (e.name !== "AbortError") {
-        acc += `\n\n_⚠ Error: ${e.message}_`;
+        failed = {
+          message: e.message || "Ada yang gagal waktu minta jawaban.",
+          kind: e.kind || "unknown",
+          status: e.status ?? null,
+          model: e.model || modelId,
+        };
       }
     } finally {
+      flush();
       const patch = { content: acc };
       if (finalStats) patch.stats = finalStats;
-      await updateMessage(assistant.id, patch);
-      setMessages((m) =>
-        m.map((x) => (x.id === assistant.id ? { ...x, ...patch } : x))
-      );
+      if (finishReason) patch.finishReason = finishReason;
+      // Jawaban kosong yang gagal nggak usah disimpan — kalau nggak, tiap
+      // percobaan yang meleset ninggalin gelembung kosong di riwayat.
+      if (!acc && failed) {
+        await deleteMessage(assistant.id);
+        setMessages((m) => m.filter((x) => x.id !== assistant.id));
+      } else {
+        await updateMessage(assistant.id, patch);
+        setMessages((m) => m.map((x) => (x.id === assistant.id ? { ...x, ...patch } : x)));
+      }
+      if (failed && (failed.kind === "auth" || failed.kind === "model")) {
+        setFailedModels((prev) => new Set(prev).add(failed.model));
+      }
+      setStreamError(failed);
+      setTruncated(finishReason === "length");
+      setStreamPhase(null);
       setIsStreaming(false);
       abortRef.current = null;
       await refreshConversations();
@@ -450,6 +525,51 @@ export default function Page() {
     setMessages(history);
     await runStream(activeId, history);
   }, [activeId, isStreaming, messages, selectedModel]);
+
+  // Coba lagi setelah galat: riwayatnya nggak diubah, jadi orang nggak perlu
+  // mengetik ulang apa pun — cukup satu tombol.
+  const suggestedModel = useMemo(() => {
+    if (!streamError) return null;
+    const broken = streamError.model || selectedModel;
+    const brokenVendor = String(broken).split("/")[0];
+    const healthy = models.filter((m) => m.id !== broken && !failedModels.has(m.id));
+    return (
+      healthy.find((m) => m.id.split("/")[0] !== brokenVendor)?.id ??
+      healthy[0]?.id ??
+      null
+    );
+  }, [streamError, models, failedModels, selectedModel]);
+
+  const handleUseSuggestedModel = useCallback(async () => {
+    if (!suggestedModel || !activeId) return;
+    setSelectedModel(suggestedModel);
+    setStreamError(null);
+    const history = await listMessages(activeId);
+    setMessages(history);
+    await runStreamWithModel(activeId, history, suggestedModel);
+  }, [suggestedModel, activeId]);
+
+  const handleRetryAfterError = useCallback(async () => {
+    if (!activeId || isStreaming) return;
+    setStreamError(null);
+    const history = await listMessages(activeId);
+    setMessages(history);
+    await runStream(activeId, history);
+  }, [activeId, isStreaming, selectedModel]);
+
+  // Jawaban yang kepotong batas panjang disambung, bukan diulang dari nol:
+  // model diminta meneruskan persis dari huruf terakhir yang sudah ada.
+  const handleContinue = useCallback(async () => {
+    if (!activeId || isStreaming) return;
+    setTruncated(false);
+    const history = await listMessages(activeId);
+    const withHint = [
+      ...history.map((m) => ({ role: m.role, content: m.content })),
+      { role: "user", content: "Lanjutkan persis dari kalimat terakhir tadi. Jangan mengulang bagian yang sudah ditulis." },
+    ];
+    setMessages(history);
+    await runStream(activeId, withHint);
+  }, [activeId, isStreaming, selectedModel]);
 
   const handleEditUser = useCallback(
     async (msgId, newContent) => {
@@ -657,7 +777,7 @@ export default function Page() {
           activeAbilityCount={activeAbilities.length}
         />
 
-        <div ref={scrollRef} className="flex-1 overflow-y-auto">
+        <div ref={scrollRef} className="relative flex-1 overflow-y-auto">
           {!hydrated ? (
             <div className="h-full flex items-center justify-center text-text-dim text-sm">
               Loading...
@@ -671,15 +791,34 @@ export default function Page() {
                   key={m.id}
                   message={m}
                   isStreaming={isStreaming && i === messages.length - 1 && m.role === "assistant"}
+                  phase={isStreaming && i === messages.length - 1 ? streamPhase : null}
                   onRegenerate={handleRegenerate}
                   onDelete={() => handleDeleteMessage(m.id)}
                   onEditUser={handleEditUser}
                   isLast={i === messages.length - 1}
                 />
               ))}
+
+              {!isStreaming && streamError && (
+                <ErrorNotice
+                  error={streamError}
+                  suggestedModel={suggestedModel}
+                  onRetry={handleRetryAfterError}
+                  onSwitchModel={handleUseSuggestedModel}
+                />
+              )}
+              {!isStreaming && truncated && !streamError && (
+                <TruncatedNotice onContinue={handleContinue} />
+              )}
             </div>
           )}
         </div>
+
+        {!atBottom && messages.length > 0 && (
+          <div className="relative">
+            <ScrollToBottom onClick={scrollToBottom} />
+          </div>
+        )}
 
         <Composer
           onSend={handleSend}

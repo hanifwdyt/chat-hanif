@@ -2,11 +2,14 @@ export const dynamic = "force-dynamic";
 
 const ROUTER_BASE = process.env.ROUTER_BASE || "https://router.hanif.app";
 const ROUTER_API_KEY = process.env.ROUTER_API_KEY || "";
+const DEV_PROXY = process.env.DEV_PROXY_BASE || "";  // mis. https://ai.hanif.app — dev saja
+
 
 export async function POST(req) {
   const body = await req.json();
 
-  const upstream = await fetch(`${ROUTER_BASE}/v1/chat/completions`, {
+  const url = DEV_PROXY ? `${DEV_PROXY}/api/chat` : `${ROUTER_BASE}/v1/chat/completions`;
+  const upstream = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
